@@ -1,10 +1,10 @@
 This repository is forked from https://github.com/cheng-01037/Self-supervised-Fewshot-Medical-Image-Segmentation. 
 
-1. Dependencies 
+# 1. Dependencies 
 
 The dependencies to be installed can be found in the file requirements.txt. 
 
-2. Data Pre-processing 
+# 2. Data Pre-processing 
 
 This repository only uses the abdominal MRI dataset from the original repository. 
 
@@ -27,12 +27,12 @@ run ./data/CHAOST2/class_slice_index_gen.ipynb
 5. Pseudolabel generation
 run ./data_preprocessing/pseudolabel_gen.ipynb. You might need to specify which dataset to use in cell 2 of the notebook. 
 
-3. Model Training
+# 3. Model Training
 
 Configure center=x in ./examples/train_ssl_abdominal_mri.sh, where x is the number of part aware prototypes. 
 run ./examples/train_ssl_abdominal_mri.sh
 
-4. Model Evaluation
+# 4. Model Evaluation
 
 Configure center=x in ./examples/train_ssl_abdominal_mri.sh, where x is the number of part aware prototypes.
 run ./examples/test_ssl_abdominal_mri.sh
