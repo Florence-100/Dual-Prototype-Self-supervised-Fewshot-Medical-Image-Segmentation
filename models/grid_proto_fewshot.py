@@ -8,6 +8,10 @@ import torch.nn.functional as F
 
 from .alpmodule import MultiProtoAsConv
 from .backbone.torchvision_backbones import TVDeeplabRes101Encoder
+
+#part aware prototype 
+from .kmeans import KmeansClustering
+
 # DEBUG
 from pdb import set_trace
 
@@ -36,11 +40,15 @@ class FewShotSeg(nn.Module):
         self.get_encoder(in_channels)
         self.get_cls()
 
+        #part aware prototypes
+        self.global_const = 0.8
+        self.kmeans = KmeansClustering(num_cnt=self.config['center'], iters=20, init='random')
+
     def get_encoder(self, in_channels):
         # if self.config['which_model'] == 'deeplab_res101':
-        if self.config['which_model'] == 'dlfcn_res101':
-            use_coco_init = self.config['use_coco_init']
-            self.encoder = TVDeeplabRes101Encoder(use_coco_init)
+        if self.config['which_model'] == 'dlfcn_res101':  #model used 
+            use_coco_init = self.config['use_coco_init'] #pretrain on MS coco data (Microsoft Common Objects in Context)
+            self.encoder = TVDeeplabRes101Encoder(use_coco_init) #feature extractor 
 
         else:
             raise NotImplementedError(f'Backbone network {self.config["which_model"]} not implemented')
@@ -53,13 +61,71 @@ class FewShotSeg(nn.Module):
         """
         Obtain the similarity-based classifier
         """
-        proto_hw = self.config["proto_grid_size"]
+        proto_hw = self.config["proto_grid_size"] #8
         feature_hw = self.config["feature_hw"]
         assert self.config['cls_name'] == 'grid_proto'
         if self.config['cls_name'] == 'grid_proto':
             self.cls_unit = MultiProtoAsConv(proto_grid = [proto_hw, proto_hw], feature_hw =  self.config["feature_hw"]) # when treating it as ordinary prototype
         else:
             raise NotImplementedError(f'Classifier {self.config["cls_name"]} not implemented')
+
+    def getFeaturesArray(self, fts, mask, upscale=2):
+
+        """
+        Extract foreground and background features
+        Args:
+            fts: input features, expect shape: 1 x C x H' x W'
+            mask: binary mask, expect shape: 1 x H x W
+        """
+        c, h1, w1 = fts.shape[1:] #2048,53,53
+        h, w = mask.shape[1:] #417,417
+
+        fts1 = F.interpolate(fts, size=mask.shape[-2:], mode='bilinear', align_corners=True) #1,2048,417,417
+        masked_fts = torch.sum(fts1 * mask[None, ...], dim=(2, 3)) \
+                     / (mask[None, ...].sum(dim=(2, 3)) + 1e-5)  # 1 x C(2048) averaging across channels 
+
+        mask_bilinear = F.interpolate(mask.unsqueeze(0), size=(h1*upscale, w1*upscale), mode='nearest').view(-1) #11236
+        if mask_bilinear.sum(0) <= 10:
+            fts = fts1.squeeze(0).permute(1, 2, 0).view(h * w, c)  ## l*c
+            mask1 = mask.view(-1)
+            if mask1.sum() == 0:
+                fts = fts[[0]]*0  # 1 x C
+            else:
+                fts = fts[mask1>0]
+        else:
+            fts = F.interpolate(fts, size=(h1*upscale, w1*upscale), mode='bilinear', align_corners=True).squeeze(0).permute(1, 2, 0).view(h1*w1*upscale**2, c)
+            fts = fts[mask_bilinear>0] #2157, 2048
+        return (fts, masked_fts) #local, global
+    
+    def getPrototype(self, fg_fts, bg_fts):
+        """
+        Average the features to obtain the prototype
+
+        Args:
+            fg_fts: lists of list of foreground features for each way/shot
+                expect shape: Wa x Sh x [1 x C]
+            bg_fts: lists of list of background features for each way/shot
+                expect shape: Wa x Sh x [1 x C]
+        """
+        n_ways, n_shots = len(fg_fts), len(fg_fts[0])
+        fg_prototypes = [sum(way) / n_shots for way in fg_fts]
+        bg_prototype = sum([sum(way) / n_shots for way in bg_fts]) / n_ways
+        return fg_prototypes, bg_prototype
+
+    def kmeansPrototype(self, fg_fts, bg_fts):
+
+        fg_fts_loc = [torch.cat([tr[0] for tr in way], dim=0) for way in fg_fts] ## concat all fg_fts 1,3080,2048
+        fg_fts_glo = [[tr[1] for tr in way] for way in fg_fts]  ## all global 1, 1, 2048
+        bg_fts_loc = torch.cat([torch.cat([tr[0] for tr in way], dim=0) for way in bg_fts], dim=0)
+        bg_fts_glo = [[tr[1] for tr in way] for way in bg_fts] #1,1,1,2048
+        fg_prop_cls = [self.kmeans.cluster(way) for way in fg_fts_loc]
+        bg_prop_cls = self.kmeans.cluster(bg_fts_loc)
+
+        fg_prop_glo, bg_prop_glo = self.getPrototype(fg_fts_glo, bg_fts_glo)
+        fg_propotypes = [fg_c + self.global_const*fg_g for (fg_c, fg_g) in zip(fg_prop_cls, fg_prop_glo)]
+        bg_propotypes = bg_prop_cls + self.global_const * bg_prop_glo
+
+        return fg_propotypes, bg_propotypes, fg_prop_glo, bg_prop_glo
 
     def forward(self, supp_imgs, fore_mask, back_mask, qry_imgs, isval, val_wsize, show_viz = False):
         """
@@ -75,23 +141,23 @@ class FewShotSeg(nn.Module):
             show_viz: return the visualization dictionary
         """
         # ('Please go through this piece of code carefully')
-        n_ways = len(supp_imgs)
-        n_shots = len(supp_imgs[0])
+        n_ways = len(supp_imgs) #no of classes 
+        n_shots = len(supp_imgs[0]) #no of labelled images in each class 
         n_queries = len(qry_imgs)
 
         assert n_ways == 1, "Multi-shot has not been implemented yet" # NOTE: actual shot in support goes in batch dimension
         assert n_queries == 1
 
         sup_bsize = supp_imgs[0][0].shape[0]
-        img_size = supp_imgs[0][0].shape[-2:]
+        img_size = supp_imgs[0][0].shape[-2:] #height?
         qry_bsize = qry_imgs[0].shape[0]
 
         assert sup_bsize == qry_bsize == 1
 
-        imgs_concat = torch.cat([torch.cat(way, dim=0) for way in supp_imgs]
-                                + [torch.cat(qry_imgs, dim=0),], dim=0)
+        imgs_concat = torch.cat([torch.cat(way, dim=0) for way in supp_imgs] #stack by ways #support images
+                                + [torch.cat(qry_imgs, dim=0),], dim=0) #query images
 
-        img_fts = self.encoder(imgs_concat, low_level = False)
+        img_fts = self.encoder(imgs_concat, low_level = False) #low level False: do not return aggregated low level features in FCN
         fts_size = img_fts.shape[-2:]
 
         supp_fts = img_fts[:n_ways * n_shots * sup_bsize].view(
@@ -100,7 +166,7 @@ class FewShotSeg(nn.Module):
             n_queries, qry_bsize, -1, *fts_size)   # N x B x C x H' x W'
         fore_mask = torch.stack([torch.stack(way, dim=0)
                                  for way in fore_mask], dim=0)  # Wa x Sh x B x H' x W'
-        fore_mask = torch.autograd.Variable(fore_mask, requires_grad = True)
+        fore_mask = torch.autograd.Variable(fore_mask, requires_grad = True) #for calculating gradients
         back_mask = torch.stack([torch.stack(way, dim=0)
                                  for way in back_mask], dim=0)  # Wa x Sh x B x H' x W'
 
@@ -124,22 +190,32 @@ class FewShotSeg(nn.Module):
             # re-interpolate support mask to the same size as support feature
             res_fg_msk = torch.stack([F.interpolate(fore_mask_w, size = fts_size, mode = 'bilinear') for fore_mask_w in fore_mask], dim = 0) # [nway, ns, nb, nh', nw']
             res_bg_msk = torch.stack([F.interpolate(back_mask_w, size = fts_size, mode = 'bilinear') for back_mask_w in back_mask], dim = 0) # [nway, ns, nb, nh', nw']
+            #F.interpolate is for downsampling/upsampling input 
 
+            #####################################generate part aware prototypes###################################
+
+            supp_fg_fts = [[self.getFeaturesArray(supp_fts[way, shot, [epi]], res_fg_msk[way, shot, [epi]])
+                            for shot in range(n_shots)] for way in range(n_ways)] #extract foreground and background features
+            supp_bg_fts = [[self.getFeaturesArray(supp_fts[way, shot, [epi]], res_bg_msk[way, shot, [epi]], 1)
+                            for shot in range(n_shots)] for way in range(n_ways)]
+            fg_prototypes, bg_prototype, fg_fts, bg_fts = self.kmeansPrototype(supp_fg_fts, supp_bg_fts)
+
+            #####################################generate part aware prototypes###################################
 
             scores          = []
             assign_maps     = []
             bg_sim_maps     = []
             fg_sim_maps     = []
-
-            _raw_score, _, aux_attr = self.cls_unit(qry_fts, supp_fts, res_bg_msk, mode = BG_PROT_MODE, thresh = BG_THRESH, isval = isval, val_wsize = val_wsize, vis_sim = show_viz  )
-
+            #calculating similar scores here?
+            _raw_score, _, aux_attr = self.cls_unit(qry_fts, supp_fts, res_bg_msk, mode = BG_PROT_MODE, thresh = BG_THRESH, isval = isval, val_wsize = val_wsize, vis_sim = show_viz  ) #prototype
+            #bg_prot_mode: using local prototype
             scores.append(_raw_score)
             assign_maps.append(aux_attr['proto_assign'])
             if show_viz:
                 bg_sim_maps.append(aux_attr['raw_local_sims'])
-
+            
             for way, _msk in enumerate(res_fg_msk):
-                _raw_score, _, aux_attr = self.cls_unit(qry_fts, supp_fts, _msk.unsqueeze(0), mode = FG_PROT_MODE if F.avg_pool2d(_msk, 4).max() >= FG_THRESH and FG_PROT_MODE != 'mask' else 'mask', thresh = FG_THRESH, isval = isval, val_wsize = val_wsize, vis_sim = show_viz  )
+                _raw_score, _, aux_attr = self.cls_unit(qry_fts, supp_fts, _msk.unsqueeze(0), partProto=fg_prototypes[way], mode = FG_PROT_MODE if F.avg_pool2d(_msk, 4).max() >= FG_THRESH and FG_PROT_MODE != 'mask' else 'mask', thresh = FG_THRESH, isval = isval, val_wsize = val_wsize, vis_sim = show_viz  )
 
                 scores.append(_raw_score)
                 if show_viz:
@@ -153,6 +229,7 @@ class FewShotSeg(nn.Module):
                 align_loss_epi = self.alignLoss(qry_fts[:, epi], pred, supp_fts[:, :, epi],
                                                 fore_mask[:, :, epi], back_mask[:, :, epi])
                 align_loss += align_loss_epi
+
         output = torch.stack(outputs, dim=1)  # N x B x (1 + Wa) x H x W
         output = output.view(-1, *output.shape[2:])
         assign_maps = torch.stack(assign_maps, dim = 1)
@@ -206,13 +283,19 @@ class FewShotSeg(nn.Module):
 
                 # background
                 qry_pred_bg_msk = F.interpolate(binary_masks[0].float(), size = img_fts.shape[-2:], mode = 'bilinear') # 1, n, h ,w
+                
+                #generate part aware prototypes 
+                qry_fg_fts = [[self.getFeaturesArray(img_fts[way, [shot]], qry_pred_fg_msk[way, [shot]])]] #extract foreground and background features
+                qry_bg_fts = [[self.getFeaturesArray(img_fts[way, [shot]], qry_pred_bg_msk[way, [shot]], 1)]]
+                qry_fg_prototypes, qry_bg_prototype, qry_fg_fts, qry_bg_fts = self.kmeansPrototype(qry_fg_fts, qry_bg_fts)
+
                 scores = []
 
                 _raw_score_bg, _, _ = self.cls_unit(qry = img_fts, sup_x = qry_fts, sup_y = qry_pred_bg_msk.unsqueeze(-3), mode = BG_PROT_MODE, thresh = BG_THRESH )
 
                 scores.append(_raw_score_bg)
 
-                _raw_score_fg, _, _ = self.cls_unit(qry = img_fts, sup_x = qry_fts, sup_y = qry_pred_fg_msk.unsqueeze(-3), mode = FG_PROT_MODE if F.avg_pool2d(qry_pred_fg_msk, 4).max() >= FG_THRESH and FG_PROT_MODE != 'mask' else 'mask', thresh = FG_THRESH )
+                _raw_score_fg, _, _ = self.cls_unit(qry = img_fts, sup_x = qry_fts, sup_y = qry_pred_fg_msk.unsqueeze(-3), partProto=qry_fg_prototypes[way], mode = FG_PROT_MODE if F.avg_pool2d(qry_pred_fg_msk, 4).max() >= FG_THRESH and FG_PROT_MODE != 'mask' else 'mask', thresh = FG_THRESH )
                 scores.append(_raw_score_fg)
 
                 supp_pred = torch.cat(scores, dim=1)  # N x (1 + Wa) x H' x W'
