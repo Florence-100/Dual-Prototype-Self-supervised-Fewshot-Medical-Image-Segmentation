@@ -9,7 +9,9 @@ CPT="myexperiments"
 DATASET='CHAOST2_Superpix'
 NWORKER=4
 
-ALL_EV=( 0) # 5-fold cross validation (0, 1, 2, 3, 4)
+#ALL_EV=( 0) # 5-fold cross validation (0, 1, 2, 3, 4)
+ALL_EV=(0 1 2 3 4)
+#ALL_EV=(0 1)
 ALL_SCALE=( "MIDDLE") # config of pseudolabels
 
 ### Use L/R kidney as testing classes
@@ -17,8 +19,8 @@ LABEL_SETS=0
 EXCLU='[2,3]' # setting 2: excluding kidneies in training set to test generalization capability even though they are unlabeled. Use [] for setting 1 by Roy et al.
 
 ### Use Liver and spleen as testing classes
-# LABEL_SETS=1 
-# EXCLU='[1,4]' 
+#LABEL_SETS=1 
+#EXCLU='[1,4]' 
 
 ###### Training configs ######
 NSTEP=100100
@@ -27,6 +29,9 @@ DECAY=0.95
 MAX_ITER=1000 # defines the size of an epoch
 SNAPSHOT_INTERVAL=25000 # interval for saving snapshot
 SEED='1234'
+
+##### Part aware prototype config #####
+CENTER=13
 
 ###### Validation configs ######
 SUPP_ID='[4]' #  # using the additionally loaded scan as support
@@ -67,6 +72,8 @@ do
     superpix_scale=$SUPERPIX_SCALE \
     lr_step_gamma=$DECAY \
     path.log_dir=$LOGDIR \
-    support_idx=$SUPP_ID
+    support_idx=$SUPP_ID \
+    center=$CENTER
     done
 done
+
