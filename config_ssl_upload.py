@@ -73,6 +73,9 @@ def cfg():
     # SSL
     superpix_scale = 'MIDDLE' #MIDDLE/ LARGE
 
+    #part aware prototype
+    center = 5
+
     model = {
         'align': usealign,
         'use_coco_init': use_coco_init,
@@ -80,7 +83,8 @@ def cfg():
         'cls_name': clsname,
         'proto_grid_size' : proto_grid_size,
         'feature_hw': feature_hw,
-        'reload_model_path': reload_model_path
+        'reload_model_path': reload_model_path,
+        'center': center
     }
 
     task = {
