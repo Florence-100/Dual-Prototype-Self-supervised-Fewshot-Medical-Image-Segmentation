@@ -27,7 +27,7 @@ import tqdm
 # config pre-trained model caching path
 os.environ['TORCH_HOME'] = "./pretrained_model"
 
-@ex.automain
+@ex.automain #defines and runs main function when I run the python script
 def main(_run, _config, _log):
     if _run.observers:
         os.makedirs(f'{_run.observers[0].dir}/snapshots', exist_ok=True)
@@ -35,13 +35,13 @@ def main(_run, _config, _log):
             os.makedirs(os.path.dirname(f'{_run.observers[0].dir}/source/{source_file}'),
                         exist_ok=True)
             _run.observers[0].save_file(source_file, f'source/{source_file}')
-        shutil.rmtree(f'{_run.observers[0].basedir}/_sources')
+        shutil.rmtree(f'{_run.observers[0].basedir}/_sources') #delete entire directory tree
 
     set_seed(_config['seed'])
     cudnn.enabled = True
-    cudnn.benchmark = True
+    cudnn.benchmark = True #look for optimal set of algorithms to run, should be faster if input size does not vary for each iteration
     torch.cuda.set_device(device=_config['gpu_id'])
-    torch.set_num_threads(1)
+    torch.set_num_threads(1) #number of threads used for intraop parallelism 
 
     _log.info('###### Create model ######')
     model = FewShotSeg(pretrained_path=None, cfg=_config['model'])
@@ -100,9 +100,9 @@ def main(_run, _config, _log):
     else:
         raise NotImplementedError
 
-    scheduler = MultiStepLR(optimizer, milestones=_config['lr_milestones'],  gamma = _config['lr_step_gamma'])
+    scheduler = MultiStepLR(optimizer, milestones=_config['lr_milestones'],  gamma = _config['lr_step_gamma']) #decays the learning rate of each parameter group by gamma once number of epoch reaches one of the milestones
 
-    my_weight = compose_wt_simple(_config["use_wce"], data_name)
+    my_weight = compose_wt_simple(_config["use_wce"], data_name) #weights for cross entropy loss (0.05-1.0)
     criterion = nn.CrossEntropyLoss(ignore_index=_config['ignore_label'], weight = my_weight)
 
     i_iter = 0 # total number of iteration
@@ -137,7 +137,7 @@ def main(_run, _config, _log):
                 print('Faulty batch detected, skip')
                 continue
 
-            query_loss = criterion(query_pred, query_labels)
+            query_loss = criterion(query_pred, query_labels) #cross entropy loss
             loss = query_loss + align_loss
             loss.backward()
             optimizer.step()
