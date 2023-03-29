@@ -25,7 +25,7 @@ class MultiProtoAsConv(nn.Module):
         kernel_size = [ ft_l // grid_l for ft_l, grid_l in zip(feature_hw, proto_grid)  ]
         self.avg_pool_op = nn.AvgPool2d( kernel_size  )
 
-    def forward(self, qry, sup_x, sup_y, mode, thresh, isval = False, val_wsize = None, vis_sim = False, **kwargs):
+    def forward(self, qry, sup_x, sup_y, mode, thresh, partProto=None, isval = False, val_wsize = None, vis_sim = False, **kwargs):
         """
         Now supports
         Args:
@@ -42,12 +42,12 @@ class MultiProtoAsConv(nn.Module):
             vis_sim:    visualize raw similarities or not
         """
 
-        qry = qry.squeeze(1) # [way(1), nb(1), nc, hw] -> [way(1), nc, h, w]
-        sup_x = sup_x.squeeze(0).squeeze(1) # [nshot, nc, h, w]
-        sup_y = sup_y.squeeze(0) # [nshot, 1, h, w]
+        qry = qry.squeeze(1) # [way(1), nb(1), nc, hw] -> [way(1), nc, h, w] #remove nb dimension
+        sup_x = sup_x.squeeze(0).squeeze(1) # [nshot, nc, h, w] #supp_x is for support features 
+        sup_y = sup_y.squeeze(0) # [nshot, 1, h, w] #supp_y is for background mask
 
         def safe_norm(x, p = 2, dim = 1, eps = 1e-4):
-            x_norm = torch.norm(x, p = p, dim = dim) # .detach()
+            x_norm = torch.norm(x, p = p, dim = dim) # .detach() #torch norm: return matrix or vector norm of given tensor
             x_norm = torch.max(x_norm, torch.ones_like(x_norm).cuda() * eps)
             x = x.div(x_norm.unsqueeze(1).expand_as(x))
             return x
@@ -67,7 +67,7 @@ class MultiProtoAsConv(nn.Module):
         # no need to merge with gridconv+
         elif mode == 'gridconv': # using local prototypes only
 
-            input_size = qry.shape
+            input_size = qry.shape #[way(1), nc, h, w]
             nch = input_size[1]
 
             sup_nshot = sup_x.shape[0]
@@ -99,9 +99,9 @@ class MultiProtoAsConv(nn.Module):
 
         elif mode == 'gridconv+': # local and global prototypes
 
-            input_size = qry.shape
+            input_size = qry.shape #[way(1), nc, h, w]
             nch = input_size[1]
-            nb_q = input_size[0]
+            nb_q = input_size[0] #way
 
             sup_size = sup_x.shape[0]
 
@@ -116,21 +116,22 @@ class MultiProtoAsConv(nn.Module):
 
             sup_y_g = sup_y_g.view( sup_nshot, 1, -1  ).permute(1, 0, 2).view(1, -1).unsqueeze(0)
 
-            protos = n_sup_x[sup_y_g > thresh, :]
+            protos = n_sup_x[sup_y_g > thresh, :] #1,256
 
+            ##############################Part aware prototype####################################
 
-            glb_proto = torch.sum(sup_x * sup_y, dim=(-1, -2)) \
-                / (sup_y.sum(dim=(-1, -2)) + 1e-5)
+            maxGlobalProtoIndex = F.cosine_similarity(qry.unsqueeze(1), partProto[..., None, None].unsqueeze(0), dim=2).max(1)[1].max()
+            glb_proto = partProto[maxGlobalProtoIndex,:].unsqueeze(0)
+
+            ##############################Part aware prototype####################################
 
             pro_n = safe_norm( torch.cat( [protos, glb_proto], dim = 0 ) )
-
             qry_n = safe_norm(qry)
 
             dists = F.conv2d(qry_n, pro_n[..., None, None]) * 20
 
             pred_grid = torch.sum(F.softmax(dists, dim = 1) * dists, dim = 1, keepdim = True)
             raw_local_sims = dists.detach()
-
 
             debug_assign = dists.argmax(dim = 1).float()
 
