@@ -1,4 +1,5 @@
 This repository is forked from https://github.com/cheng-01037/Self-supervised-Fewshot-Medical-Image-Segmentation. 
+Some parts of the code is inspired by https://github.com/Xiangyi1996/PPNet-PyTorch
 
 # 1. Dependencies 
 
