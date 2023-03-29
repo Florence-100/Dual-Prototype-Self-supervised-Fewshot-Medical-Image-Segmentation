@@ -62,14 +62,14 @@ def main(_run, _config, _log):
         max_label = 3
     elif data_name == 'CHAOST2_Superpix':
         baseset_name = 'CHAOST2'
-        max_label = 4
+        max_label = 4 #something different from training.py
     else:
         raise ValueError(f'Dataset: {data_name} not found')
 
     test_labels = DATASET_INFO[baseset_name]['LABEL_GROUP']['pa_all'] - DATASET_INFO[baseset_name]['LABEL_GROUP'][_config["label_sets"]]
 
     ### Transforms for data augmentation
-    te_transforms = None
+    te_transforms = None #no transform in validation
 
     assert _config['scan_per_load'] < 0 # by default we load the entire dataset directly
 
@@ -94,8 +94,7 @@ def main(_run, _config, _log):
     else:
         norm_func = get_normalize_op(modality = 'MR', fids = None)
 
-
-    te_dataset, te_parent = med_fewshot_val(
+    te_dataset, te_parent = med_fewshot_val( #not present in training.py
         dataset_name = baseset_name,
         base_dir=_config['path'][baseset_name]['data_dir'],
         idx_split = _config['eval_fold'],
@@ -126,7 +125,7 @@ def main(_run, _config, _log):
     with torch.no_grad():
         save_pred_buffer = {} # indexed by class
 
-        for curr_lb in test_labels:
+        for curr_lb in sorted(test_labels):
             te_dataset.set_curr_cls(curr_lb)
             support_batched = te_parent.get_support(curr_class = curr_lb, class_idx = [curr_lb], scan_idx = _config["support_idx"], npart=_config['task']['npart'])
 
@@ -192,7 +191,7 @@ def main(_run, _config, _log):
             for _scan_id, _pred in _preds.items():
                 _pred *= float(curr_lb)
                 itk_pred = convert_to_sitk(_pred, te_dataset.dataset.info_by_scan[_scan_id])
-                fid = os.path.join(f'{_run.observers[0].dir}/interm_preds', f'scan_{_scan_id}_label_{curr_lb}.nii.gz')
+                fid = os.path.join(f'{_run.observers[0].dir}/interm_preds', f'scan_{_scan_id}_label_{curr_lb}.nii.gz') #save output
                 sitk.WriteImage(itk_pred, fid, True)
                 _log.info(f'###### {fid} has been saved ######')
 
