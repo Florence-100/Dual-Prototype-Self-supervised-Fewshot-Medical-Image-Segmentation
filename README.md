@@ -35,5 +35,8 @@ run ./examples/train_ssl_abdominal_mri.sh
 
 # 4. Model Evaluation
 
-Configure center=x in ./examples/train_ssl_abdominal_mri.sh, where x is the number of part aware prototypes.
+Configure center=x in ./examples/test_ssl_abdominal_mri.sh, where x is the number of part aware prototypes.
 run ./examples/test_ssl_abdominal_mri.sh
+
+# 5. Results
+After runnning the test script, the results can be founds in exps/myexp/mySSL_test_vfold0_CHAOST2_Superpix_sets_0_1shot/1/metrics.json. The predicted images can be found in the folder interm_preds. 
